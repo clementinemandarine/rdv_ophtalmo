@@ -61,5 +61,5 @@ while alert == 0:
         send_gap(gap_min, ["clementine.benoit@gmail.com"], server)
         alert = 1
     else:
-        send_gap(gap_min, ["clementine.benoit@gmail.com"], server)
-        time.sleep(60*10)
+        # send_gap(gap_min, ["clementine.benoit@gmail.com"], server)
+        time.sleep(60*30)
