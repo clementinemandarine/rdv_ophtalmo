@@ -1,65 +1,124 @@
-import requests
-from BeautifulSoup import BeautifulSoup
-from dateutil import parser
-import datetime
-import smtplib
-from getpass import getpass
+import sys
 import time
+import smtplib
+import datetime
+from email.MIMEText import MIMEText
+from getpass import getpass
 
-def get_page_text(url): 
+import requests
+from dateutil import parser
+from BeautifulSoup import BeautifulSoup
 
+
+############# CONSTANT & GLOBALS ##################################
+# scraping
+URL = "https://rdvweb.pointvision.fr//indexNP.aspx?groupemid=65&metier=Opthalmologue&modeMediSite=1&date=&heure=&source="
+EVERY = 1  # Minutes before scraping again
+MAX_DAYS = 30  # Max gap between today and the rdv.
+
+# e-mailing settings
+server = None
+SMTP_SERVER = 'smtp.gmail.com'
+SMTP_PORT = 587
+
+SENDER = "mandarine.manatea", "Alert Oftalmo"  # Login, Email-Name
+TO = "arturo.mondragon@xrce.xerox.com"
+
+
+def _now():
+    return datetime.datetime.now()
+
+
+############# SCRAPING ##########################################
+def get_page_text(url):
     page = requests.get(url, verify=False)
+
     return page.text
 
-def get_dates(page_text):
 
+def extract_dates(page_text):
     soup = BeautifulSoup(page_text)
-    date_str_list = []
+
+    dates_str = []
     for rdv_str in soup.findAll("input", "pastilleRdv"):
         raw_rdv = rdv_str.attrMap["onclick"]
-        date_str = raw_rdv[raw_rdv.index("DateRDV")+ 17: raw_rdv.index("DateRDV")+ 33]
-        date_str_list.append(date_str)
-    return date_str_list
+        date_str = raw_rdv[
+            raw_rdv.index("DateRDV") + 17: raw_rdv.index("DateRDV") + 33]
+        dates_str.append(date_str)
 
-def find_gap_min(date_str_list):
+    return dates_str
 
+
+def get_min_date(raw_dates):
     now = datetime.datetime.now()
-    # rdv = map(lambda d: parser.parse(d, dayfirst=True), date_str_list)
-    rdv = [parser.parse(d, dayfirst=True) for d in date_str_list]
-    rdv.sort()
-    return (rdv[0] - now).days
 
-def send_gap(gap, mailto, server):
+    dates = [
+        parser.parse(d, dayfirst=True)
+        for d in raw_dates
+    ]
+    min_date = min(dates)
+    print "%s [INFO]: Number of dates found %d" % (str(_now()), len(dates))
 
-    msg = "\r\n".join([
-    	"Subject: Info ophtalmo",
-        " ".join(("Le prochain rdv est dans", str(gap), "jours.")),
-    ])
-    
-    server.sendmail(
-    "info_ophtalmo@gmail.com", 
-    mailto, 
-    msg
-	)
+    return min_date, (min_date - now).days
 
-# -----------------------------------
-server = smtplib.SMTP('smtp.gmail.com', 587, timeout=5)
-server.ehlo()
-server.starttls()
-server.login("mandarine.manatea", getpass())
 
-alert = 0
+############# EMAIL ALERT ##########################################
+def set_smtp_server(sender=SENDER,
+                    host=SMTP_SERVER, port=SMTP_PORT, timeout=5):
+    global server
+    login, _ = sender
+    server = smtplib.SMTP(host, port, timeout=timeout)
+    server.ehlo()
+    server.starttls()
+    server.login(login, getpass())
 
-while alert == 0:
-    
-    url="https://rdvweb.pointvision.fr//indexNP.aspx?groupemid=65&metier=Opthalmologue&modeMediSite=1&date=&heure=&source="
-    page_text = get_page_text(url)
-    dates = get_dates(page_text)
-    gap_min = find_gap_min(dates)
 
-    if gap_min < 30:
-        send_gap(gap_min, ["clementine.benoit@gmail.com"], server)
-        alert = 1
+def send_alert_mail(sender, to, date, days):
+    global server
+
+    MSG_TPL = "Le prochain rdv est le %s dans %d jours."
+
+    msg = MIMEText(MSG_TPL % (str(date), days))
+
+    msg['From'] = sender
+    msg['To'] = to
+    msg['Subject'] = "Un rdv bientot!"
+
+    response = server.sendmail(sender, to, msg.as_string())
+    unsent = response.keys()
+
+    if unsent:
+        print "%s [WARNING]: Unable to send mail to %s" % (
+            str(_now()), str(unsent))
+
+    return unsent
+
+
+################# WORKERS ################################
+def rdv_alert(url=URL, every=EVERY, max_days=MAX_DAYS,
+              sender=SENDER, to=TO):
+    print "%s [INFO]: Scraping dates" % str(_now())
+
+    date, days = get_min_date(extract_dates(get_page_text(url)))
+    _, sender_name = sender
+    if days < max_days:
+        print "%s [INFO]: Sending mail to" % (str(_now()), to)
+
+        send_alert_mail(sender_name, to, date, days)
     else:
-        # send_gap(gap_min, ["clementine.benoit@gmail.com"], server)
-        time.sleep(60*30)
+        print "%s [INFO]: No date in range, best date found %s" % (
+            str(_now()), str(date))
+        sys.stdout.flush()
+        time.sleep(every*60)
+
+
+def alert_worker(*args, **kwargs):
+    while True:
+        try:
+            rdv_alert(*args, **kwargs)
+        except Exception as e:
+            print "%s [ERROR]", e.message
+
+if __name__ == '__main__':
+    set_smtp_server()
+    alert_worker()
